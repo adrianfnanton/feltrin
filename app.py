@@ -1,158 +1,158 @@
+import streamlit as st
 import pandas as pd
-import re
+import io
 
-# --- CONFIGURACIÓN ---
-archivo_proveedor = 'Lista GSG 62.xlsx' 
-archivo_mis_skus = 'skus.xlsx'
-# ---------------------
+# Título de la página
+st.title("🔎 Buscador de Precios GSG")
+st.write("Sube la lista del proveedor y tu lista de SKUs para cruzar la información.")
 
-print("⏳ Procesando... Limpiando precios y cruzando datos...")
+# 1. Botones para subir archivos
+archivo_proveedor = st.file_uploader("1. Sube la Lista de Precios (Excel con 40 hojas)", type=['xlsx'])
+archivo_skus = st.file_uploader("2. Sube tu lista de SKUs a buscar", type=['xlsx', 'csv'])
 
-try:
-    xls_proveedor = pd.read_excel(archivo_proveedor, sheet_name=None, header=None)
-except FileNotFoundError:
-    print("❌ ERROR: No encuentro los archivos. Súbelos al panel izquierdo.")
-    xls_proveedor = {}
-
-base_datos = []
-
-# Función para convertir "$ 1.500,00" a numero 1500.00
+# Función de limpieza
 def limpiar_precio(valor):
     if pd.isna(valor) or str(valor).strip() in ["-", "", "nan"]:
         return None
-    
-    # Convertimos a texto
-    s = str(valor).strip()
-    
-    # Quitamos el signo $ y espacios
-    s = s.replace('$', '').replace(' ', '')
-    
+    s = str(valor).strip().replace('$', '').replace(' ', '')
     try:
-        # Formato Argentino: 1.000,50 -> Quitamos punto de mil, cambiamos coma por punto
-        if ',' in s and '.' in s: # Caso completo: 1.500,50
-             s = s.replace('.', '').replace(',', '.')
-        elif ',' in s: # Caso decimal simple: 50,50
-             s = s.replace(',', '.')
-        elif '.' in s and len(s.split('.')[-1]) == 3: # Caso mil sin decimal: 1.000
-             s = s.replace('.', '')
-        
+        if ',' in s and '.' in s: s = s.replace('.', '').replace(',', '.')
+        elif ',' in s: s = s.replace(',', '.')
+        elif '.' in s and len(s.split('.')[-1]) == 3: s = s.replace('.', '')
         return float(s)
     except:
-        return valor # Si dice "Consultar" u otra cosa, lo devolvemos tal cual
+        return valor
 
-if xls_proveedor:
-    for nombre_hoja, df_raw in xls_proveedor.items():
-        # 1. Buscar encabezado
-        fila_header = -1
-        for i, row in df_raw.head(20).iterrows():
-            row_str = row.astype(str).str.upper()
-            if row_str.str.contains("CODIGO").any():
-                fila_header = i
-                break
-        
-        if fila_header != -1:
-            # 2. Preparar hoja
-            df_hoja = df_raw.iloc[fila_header+1:].copy()
-            df_hoja.columns = df_raw.iloc[fila_header]
-            
-            col_sku = None
-            col_precio = None
-            
-            for col in df_hoja.columns:
-                col_upper = str(col).upper()
-                if "CODIGO" in col_upper: col_sku = col
-                if "PRECIO" in col_upper:
-                    if col_precio is None: col_precio = col
-                    elif "<" in col_upper: col_precio = col
-            
-            if col_sku and col_precio:
-                # --- LÓGICA DE COLA ---
-                cola_precios = []
-                ultimo_precio_valido = None
+# Botón de Procesar
+if st.button("🚀 Procesar Archivos"):
+    if archivo_proveedor and archivo_skus:
+        with st.spinner('Procesando... esto puede tardar unos segundos...'):
+            try:
+                # --- CORRECCIÓN AQUÍ: Asegurar lectura correcta ---
                 
-                for idx, row in df_hoja.iterrows():
-                    raw_sku = str(row[col_sku])
-                    # Obtenemos el valor crudo del precio
-                    raw_precio = str(row[col_precio]) if pd.notna(row[col_precio]) else ""
+                # 1. Leer Proveedor
+                archivo_proveedor.seek(0) # Rebobinar archivo al inicio
+                xls_proveedor = pd.read_excel(archivo_proveedor, sheet_name=None, header=None, engine='openpyxl')
+                
+                # 2. Leer Mis SKUs
+                archivo_skus.seek(0) # Rebobinar archivo al inicio
+                if archivo_skus.name.lower().endswith('.csv'):
+                    df_mis_skus = pd.read_csv(archivo_skus)
+                else:
+                    df_mis_skus = pd.read_excel(archivo_skus, engine='openpyxl')
+                
+                # Obtener lista de códigos (asumiendo primera columna)
+                mis_codigos = df_mis_skus.iloc[:, 0].dropna().astype(str).tolist()
+
+                # --- PROCESAMIENTO ---
+                base_datos = []
+                for nombre_hoja, df_raw in xls_proveedor.items():
+                    # Buscar encabezado
+                    fila_header = -1
+                    for i, row in df_raw.head(20).iterrows():
+                        if row.astype(str).str.upper().str.contains("CODIGO").any():
+                            fila_header = i
+                            break
                     
-                    skus_en_celda = [s.strip().split()[0] for s in raw_sku.split('\n') if s.strip()]
-                    precios_en_celda = [p.strip() for p in raw_precio.split('\n') if p.strip()]
+                    if fila_header != -1:
+                        df_hoja = df_raw.iloc[fila_header+1:].copy()
+                        df_hoja.columns = df_raw.iloc[fila_header]
+                        
+                        col_sku = None
+                        col_precio = None
+                        for col in df_hoja.columns:
+                            c_up = str(col).upper()
+                            if "CODIGO" in c_up: col_sku = col
+                            if "PRECIO" in c_up:
+                                if col_precio is None or "<" in c_up: col_precio = col
+                        
+                        if col_sku and col_precio:
+                            # Cola de precios
+                            cola_precios = []
+                            ultimo_precio = None
+                            
+                            for idx, row in df_hoja.iterrows():
+                                raw_sku = str(row[col_sku])
+                                raw_precio = str(row[col_precio]) if pd.notna(row[col_precio]) else ""
+                                
+                                skus_cell = [s.strip().split()[0] for s in raw_sku.split('\n') if s.strip()]
+                                prices_cell = [p.strip() for p in raw_precio.split('\n') if p.strip()]
+                                
+                                if prices_cell:
+                                    cola_precios = list(prices_cell)
+                                    ultimo_precio = prices_cell[-1]
+                                
+                                for s in skus_cell:
+                                    if len(s) > 3:
+                                        p_str = "-"
+                                        if cola_precios: p_str = cola_precios.pop(0)
+                                        elif ultimo_precio: p_str = ultimo_precio
+                                        
+                                        base_datos.append({
+                                            'sku': s, 
+                                            'hoja': nombre_hoja, 
+                                            'precio': limpiar_precio(p_str)
+                                        })
+
+                # --- CRUCE ---
+                resultados = []
+                patrones_db = [x for x in base_datos if 'X' in str(x['sku']).upper()]
+
+                def es_compatible(buscado, base):
+                    if len(buscado) != len(base): return False
+                    for cb, cbase in zip(buscado, base):
+                        if cbase == 'X': continue
+                        if cb != cbase: return False
+                    return True
+
+                st.info(f"✅ Se encontraron {len(base_datos)} productos en la lista del proveedor.")
+
+                # Barra de progreso
+                progress_bar = st.progress(0)
+                total = len(mis_codigos)
+                
+                for i, buscado in enumerate(mis_codigos):
+                    buscado_clean = buscado.strip()
+                    buscado_upper = buscado_clean.upper()
+                    encontrado = False
                     
-                    # Rellenamos la cola si hay precios nuevos
-                    if precios_en_celda:
-                        cola_precios = list(precios_en_celda)
-                        ultimo_precio_valido = precios_en_celda[-1] 
+                    # Exacto
+                    for item in base_datos:
+                        if str(item['sku']).upper() == buscado_upper:
+                            resultados.append({'Mi SKU': buscado_clean, 'Encontrado en': item['hoja'], 'SKU Lista': item['sku'], 'Precio': item['precio'], 'Tipo': 'Exacto'})
+                            encontrado = True
+                            break
+                    # Patron
+                    if not encontrado:
+                        for item in patrones_db:
+                            if es_compatible(buscado_upper, str(item['sku']).upper()):
+                                resultados.append({'Mi SKU': buscado_clean, 'Encontrado en': item['hoja'], 'SKU Lista': item['sku'], 'Precio': item['precio'], 'Tipo': 'Patrón'})
+                                encontrado = True
+                                break
+                    if not encontrado:
+                        resultados.append({'Mi SKU': buscado_clean, 'Encontrado en': '-', 'SKU Lista': '-', 'Precio': 0, 'Tipo': '-'})
                     
-                    for s in skus_en_celda:
-                        if len(s) > 3:
-                            precio_str = "-"
-                            
-                            if len(cola_precios) > 0:
-                                precio_str = cola_precios.pop(0)
-                            elif ultimo_precio_valido:
-                                precio_str = ultimo_precio_valido
-                            
-                            # AQUI LA LIMPIEZA
-                            precio_num = limpiar_precio(precio_str)
-                            
-                            base_datos.append({
-                                'sku': s, 
-                                'hoja': nombre_hoja, 
-                                'precio': precio_num
-                            })
+                    if i % 5 == 0: progress_bar.progress(min((i + 1) / total, 1.0))
 
-print(f"✅ Se procesaron {len(base_datos)} productos correctamente.")
+                progress_bar.progress(100)
+                
+                # --- DESCARGA ---
+                df_final = pd.DataFrame(resultados)
+                
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                    df_final.to_excel(writer, index=False)
+                
+                st.success("¡Proceso Terminado! Descarga tu archivo abajo:")
+                st.download_button(
+                    label="📥 Descargar Resultado Excel",
+                    data=buffer,
+                    file_name="resultado_precios_gsg.xlsx",
+                    mime="application/vnd.ms-excel"
+                )
 
-# --- CRUCE ---
-print("🚀 Cruzando datos...")
-df_mis_skus = pd.read_excel(archivo_mis_skus)
-mis_codigos = df_mis_skus.iloc[:, 0].dropna().astype(str).tolist()
-
-resultados = []
-patrones_db = [item for item in base_datos if 'X' in item['sku'].upper()]
-
-def es_compatible(buscado, base):
-    if len(buscado) != len(base): return False
-    for cb, cbase in zip(buscado, base):
-        if cbase == 'X': continue
-        if cb != cbase: return False
-    return True
-
-for buscado in mis_codigos:
-    buscado_clean = buscado.strip()
-    buscado_upper = buscado_clean.upper()
-    encontrado = False
-    
-    # 1. Exacto
-    for item in base_datos:
-        if item['sku'].upper() == buscado_upper:
-            resultados.append({
-                'Mi SKU': buscado_clean,
-                'Encontrado en': item['hoja'],
-                'SKU Lista': item['sku'],
-                'Precio': item['precio'], # Ya es número
-                'Tipo': 'Exacto'
-            })
-            encontrado = True
-            break
-    
-    # 2. Patrón
-    if not encontrado:
-        for item in patrones_db:
-            if es_compatible(buscado_upper, item['sku'].upper()):
-                resultados.append({
-                    'Mi SKU': buscado_clean,
-                    'Encontrado en': item['hoja'],
-                    'SKU Lista': item['sku'],
-                    'Precio': item['precio'], # Ya es número
-                    'Tipo': 'Patrón'
-                })
-                encontrado = True
-                break
-    
-    if not encontrado:
-        resultados.append({'Mi SKU': buscado_clean, 'Encontrado en': '-', 'Precio': 0, 'Tipo': '-'})
-
-df_final = pd.DataFrame(resultados)
-df_final.to_excel('resultado_numerico_final.xlsx', index=False)
-print("🎉 ¡Listo! Ahora sí puedes sumar la columna 'Precio' en el archivo: resultado_numerico_final.xlsx")
+            except Exception as e:
+                st.error(f"Ocurrió un error en el proceso: {e}")
+                st.warning("Consejo: Asegúrate de que tus archivos no estén dañados y que la lista de SKUs tenga los códigos en la primera columna.")
+    else:
+        st.warning("⚠️ Por favor sube ambos archivos antes de procesar.")
